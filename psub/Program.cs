@@ -42,17 +42,21 @@ namespace psub
 
         var copyOutput = process.StandardOutput.BaseStream.CopyToAsync(mem);
 
-        // Spawn pipe servers for any incoming connections
+        // Windows tools like type will often open a pipe several times
+        // We need to be prepared to serve the output to an arbitrary number
+        // of clients
 
-        var red = 5;
+        // We can stop waiting for more clients once at least one client
+        // has been fed the whole output
+        var redundancy = 5;
 
         // Cancel waiting for connections when at least one pipe has been fed the full stream
         var cts = new CancellationTokenSource();
-        var pipesFed = Enumerable.Repeat(0, red).Select(_ => Task.Run(async () =>
+        var pipesFed = Enumerable.Repeat(0, redundancy).Select(_ => Task.Run(async () =>
         {
           Debug("Starting pipe server");
 
-          using (var pipe = new NamedPipeServerStream(pipeName, PipeDirection.Out, red, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+          using (var pipe = new NamedPipeServerStream(pipeName, PipeDirection.Out, redundancy, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
           {
             Debug("Waiting for connection");
             try
@@ -66,10 +70,10 @@ namespace psub
             }
 
             await copyOutput;
-            Debug("Finished waiting for output copying");
+            Debug("Finished waiting for output");
 
             var buffer = mem.ToArray();
-            Debug("Retrieved buffer");
+            Debug("Retrieved output buffer");
             Debug($"Buffer size is {buffer.Length}");
 
             using (var feeder = new MemoryStream(buffer))
@@ -85,17 +89,17 @@ namespace psub
               }
             }
 
-            // Stop waiting for new connections once all output is available
+            // Stop waiting for new connections once at least one pipe is fed
             cts.Cancel();
-            Debug("Abort waiting for new connections");
+            Debug("Aborted waiting for further connections");
           }
         })).ToList();
 
         process.WaitForExit();
-        Debug("Process exited");
+        Debug("Child process exited");
 
         Task.WhenAll(pipesFed).Wait();
-        Debug("All pipe servers finished");
+        Debug("Output fed to all connected pipes");
       }
     }
   }
